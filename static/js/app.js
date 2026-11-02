@@ -5,6 +5,13 @@ const question = document.getElementById('question');
 const trace = document.getElementById('trace');
 const sourceUsed = document.getElementById('sourceUsed');
 
+let isProcessing = false;
+
+
+// --------------------------------------------------
+// HTML HELPERS
+// --------------------------------------------------
+
 function escapeHtml(s = '') {
     return String(s).replace(/[&<>'"]/g, c => ({
         '&': '&amp;',
@@ -15,16 +22,23 @@ function escapeHtml(s = '') {
     }[c]));
 }
 
+
 function formatText(s = '') {
     return escapeHtml(s).replace(/\n/g, '<br>');
 }
 
-// Safely read JSON responses
+
+// --------------------------------------------------
+// API RESPONSE HANDLER
+// --------------------------------------------------
+
 async function readResponse(response) {
     const text = await response.text();
 
     if (!text) {
-        throw new Error(`Empty server response (HTTP ${response.status})`);
+        throw new Error(
+            `Empty server response (HTTP ${response.status})`
+        );
     }
 
     let data;
@@ -33,37 +47,64 @@ async function readResponse(response) {
         data = JSON.parse(text);
     } catch {
         throw new Error(
-            `Server returned invalid JSON (HTTP ${response.status}).`
+            `Server returned invalid JSON (HTTP ${response.status})`
         );
     }
 
     if (!response.ok) {
         throw new Error(
-            data.detail || data.error || `Request failed (${response.status})`
+            data.detail ||
+            data.error ||
+            `Request failed (${response.status})`
         );
     }
 
     return data;
 }
 
+
+// --------------------------------------------------
+// MESSAGE RENDERING
+// --------------------------------------------------
+
 function addMessage(role, text, source = '', citations = []) {
     const wrap = document.createElement('div');
+
     wrap.className = `message ${role}`;
 
     const citeHtml = citations.length
-        ? `<div class="citations"><strong>Sources</strong><br>${
-            citations.map(c => c.url
-                ? `<a href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.title)}</a>`
-                : escapeHtml(c.title)
-            ).join('<br>')
-        }</div>`
+        ? `
+            <div class="citations">
+                <strong>Sources</strong><br>
+                ${citations.map(c => {
+                    if (c.url) {
+                        return `
+                            <a href="${escapeHtml(c.url)}"
+                               target="_blank"
+                               rel="noopener noreferrer">
+                               ${escapeHtml(c.title)}
+                            </a>
+                        `;
+                    }
+
+                    return escapeHtml(c.title);
+                }).join('<br>')}
+            </div>
+        `
         : '';
 
     wrap.innerHTML = `
-        <div class="avatar">AI</div>
+        <div class="avatar">${role === 'user' ? 'You' : 'AI'}</div>
+
         <div class="bubble">
             ${formatText(text)}
-            ${source ? `<div class="answer-source">Source: ${escapeHtml(source)}</div>` : ''}
+
+            ${source ? `
+                <div class="answer-source">
+                    Source: ${escapeHtml(source)}
+                </div>
+            ` : ''}
+
             ${citeHtml}
         </div>
     `;
@@ -72,110 +113,237 @@ function addMessage(role, text, source = '', citations = []) {
     chat.scrollTop = chat.scrollHeight;
 }
 
+
+// --------------------------------------------------
+// TRACE RENDERING
+// --------------------------------------------------
+
 function renderTrace(items = []) {
     trace.innerHTML = items.length
-        ? items.map(x => `<div class="trace-item">${escapeHtml(x)}</div>`).join('')
+        ? items.map(item => `
+            <div class="trace-item">
+                ${escapeHtml(item)}
+            </div>
+        `).join('')
         : '<div class="empty">No trace.</div>';
 }
 
-async function askAgent(q) {
-    addMessage('user', q);
-    question.value = '';
 
-    renderTrace(['Running LangGraph workflow...']);
-    sourceUsed.textContent = 'Running';
+// --------------------------------------------------
+// LOADING STATE
+// --------------------------------------------------
+
+function setLoading(loading) {
+    isProcessing = loading;
 
     const btn = form.querySelector('button');
-    btn.disabled = true;
+
+    if (btn) {
+        btn.disabled = loading;
+        btn.textContent = loading ? 'Thinking...' : 'Send';
+    }
+
+    question.disabled = loading;
+
+    document.querySelectorAll('.example').forEach(button => {
+        button.disabled = loading;
+    });
+
+    sourceUsed.textContent = loading ? 'Processing...' : sourceUsed.textContent;
+}
+
+
+// --------------------------------------------------
+// CHAT API
+// --------------------------------------------------
+
+async function askAgent(q) {
+
+    if (isProcessing || !q.trim()) {
+        return;
+    }
+
+    addMessage('user', q);
+
+    question.value = '';
+
+    renderTrace(['Starting LangGraph workflow...']);
+
+    setLoading(true);
 
     try {
+
         const res = await fetch('/api/chat', {
             method: 'POST',
+
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ question: q })
+
+            body: JSON.stringify({
+                question: q
+            })
         });
 
         const data = await readResponse(res);
 
         addMessage(
             'assistant',
-            data.answer,
-            data.source_used,
+            data.answer || 'No answer was returned.',
+            data.source_used || 'Unknown',
             data.citations || []
         );
 
         renderTrace(data.trace || []);
+
         sourceUsed.textContent = data.source_used || 'Unknown';
 
-    } catch (e) {
-        console.error('Chat API error:', e);
-        addMessage('assistant', `Error: ${e.message}`);
-        renderTrace(['Request failed']);
+        if (
+            data.rewritten_query &&
+            data.rewritten_query !== q
+        ) {
+            renderTrace([
+                ...(data.trace || []),
+                `Final search query → ${data.rewritten_query}`
+            ]);
+        }
+
+    } catch (error) {
+
+        console.error('Chat API error:', error);
+
+        addMessage(
+            'assistant',
+            `Error: ${error.message}`
+        );
+
+        renderTrace([
+            'Request failed',
+            error.message
+        ]);
+
         sourceUsed.textContent = 'Error';
 
     } finally {
-        btn.disabled = false;
+
+        setLoading(false);
+
     }
 }
 
-form.addEventListener('submit', e => {
-    e.preventDefault();
+
+// --------------------------------------------------
+// CHAT FORM
+// --------------------------------------------------
+
+form.addEventListener('submit', event => {
+
+    event.preventDefault();
 
     const q = question.value.trim();
 
     if (q) {
         askAgent(q);
     }
+
 });
 
-document.querySelectorAll('.example').forEach(b => {
-    b.addEventListener('click', () => {
-        askAgent(b.textContent.trim());
+
+// --------------------------------------------------
+// EXAMPLE QUESTIONS
+// --------------------------------------------------
+
+document.querySelectorAll('.example').forEach(button => {
+
+    button.addEventListener('click', () => {
+
+        askAgent(button.textContent.trim());
+
     });
+
 });
 
-// Upload modal
+
+// --------------------------------------------------
+// UPLOAD MODAL
+// --------------------------------------------------
+
 const modal = document.getElementById('uploadModal');
 
-document.getElementById('openUpload').onclick = () =>
-    modal.classList.remove('hidden');
+const openUpload = document.getElementById('openUpload');
+const closeUpload = document.getElementById('closeUpload');
 
-document.getElementById('closeUpload').onclick = () =>
-    modal.classList.add('hidden');
+if (openUpload && modal) {
+    openUpload.onclick = () => {
+        modal.classList.remove('hidden');
+    };
+}
 
-// Document upload
-document.getElementById('uploadBtn').onclick = async () => {
-    const file = document.getElementById('fileInput').files[0];
-    const key = document.getElementById('adminKey').value;
-    const status = document.getElementById('uploadStatus');
+if (closeUpload && modal) {
+    closeUpload.onclick = () => {
+        modal.classList.add('hidden');
+    };
+}
 
-    if (!file) {
-        status.textContent = 'Choose a file first.';
-        return;
-    }
 
-    status.textContent = 'Indexing document...';
+// --------------------------------------------------
+// DOCUMENT UPLOAD
+// --------------------------------------------------
 
-    const fd = new FormData();
-    fd.append('file', file);
+const uploadButton = document.getElementById('uploadBtn');
 
-    try {
-        const r = await fetch('/api/ingest', {
-            method: 'POST',
-            headers: {
-                'X-Admin-Key': key
-            },
-            body: fd
-        });
+if (uploadButton) {
 
-        const d = await readResponse(r);
+    uploadButton.onclick = async () => {
 
-        status.textContent = `Indexed ${d.file}: ${d.chunks} chunks.`;
+        const file = document.getElementById('fileInput').files[0];
 
-    } catch (e) {
-        console.error('Upload API error:', e);
-        status.textContent = `Error: ${e.message}`;
-    }
-};
+        const key = document.getElementById('adminKey').value;
+
+        const status = document.getElementById('uploadStatus');
+
+        if (!file) {
+            status.textContent = 'Choose a file first.';
+            return;
+        }
+
+        uploadButton.disabled = true;
+
+        status.textContent = 'Uploading and indexing document...';
+
+        const fd = new FormData();
+
+        fd.append('file', file);
+
+        try {
+
+            const response = await fetch('/api/ingest', {
+                method: 'POST',
+
+                headers: {
+                    'X-Admin-Key': key
+                },
+
+                body: fd
+            });
+
+            const data = await readResponse(response);
+
+            status.textContent =
+                `Successfully indexed ${data.file}: ${data.chunks} chunks.`;
+
+        } catch (error) {
+
+            console.error('Upload API error:', error);
+
+            status.textContent = `Error: ${error.message}`;
+
+        } finally {
+
+            uploadButton.disabled = false;
+
+        }
+
+    };
+
+}
