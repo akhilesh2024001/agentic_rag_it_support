@@ -20,9 +20,12 @@ class Settings(BaseSettings):
     pinecone_api_key: str = ""
     pinecone_index_name: str = "fde-it-support-minilm"
     pinecone_namespace: str = "company-it-kb"
+    pinecone_cloud: str = "aws"
+    pinecone_region: str = "us-east-1"
 
-    # Local HuggingFace embeddings
+    # FastEmbed (small ONNX model, 384 dimensions, no torch)
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_cache_dir: str = str(BASE_DIR / ".cache" / "fastembed")
 
     # RAG configuration
     top_k: int = 4
@@ -32,7 +35,7 @@ class Settings(BaseSettings):
     admin_api_key: str = "change-me"
     audit_db_path: str = str(BASE_DIR / "data" / "audit.db")
     upload_dir: str = str(BASE_DIR / "uploads")
-    sample_kb_dir: str = str(BASE_DIR / "static" / "data" / "sample_kb")
+    sample_kb_dir: str = str(BASE_DIR / "data" / "sample_kb")
 
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
