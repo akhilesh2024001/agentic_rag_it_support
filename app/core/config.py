@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Groq LLM configuration
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
 
     # Free local embeddings using FastEmbed
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
