@@ -26,7 +26,6 @@ _web_search = None
 _llm_lock = Lock()
 _web_search_lock = Lock()
 
-# Limit prompt sizes to avoid unnecessarily large requests.
 MAX_DOCUMENT_CHARS = 3000
 MAX_WEB_RESULTS_CHARS = 12000
 
@@ -172,9 +171,7 @@ def retrieve_kb(state: AgentState):
 
     retriever = get_retriever()
 
-    docs = retriever.invoke(
-        state["current_query"]
-    )
+    docs = retriever.invoke(state["current_query"])
 
     logger.info(
         "Retrieved %d private KB chunks",
@@ -200,11 +197,7 @@ def build_kb_context(docs):
 
     for doc in docs:
 
-        source = doc.metadata.get(
-            "source",
-            "unknown",
-        )
-
+        source = doc.metadata.get("source", "unknown")
         content = doc.page_content[:MAX_DOCUMENT_CHARS]
 
         context_parts.append(
@@ -290,7 +283,7 @@ def after_kb(
 
 
 # ==========================================
-# 10. Search Web If KB Is Insufficient
+# 10. Search Web Using Tavily
 # ==========================================
 
 def search_web(state: AgentState):
@@ -301,17 +294,21 @@ def search_web(state: AgentState):
         "source_used": "web",
     }
 
+    logger.info("Web search node started")
+
+    # Check whether external search is enabled.
     if not settings.web_fallback_enabled:
+        logger.warning("Web fallback is disabled")
+
         return {
             **empty_result,
             "trace": add_trace(
                 state,
-                "Web fallback disabled → WEB_FALLBACK_ENABLED=false",
+                "Web fallback disabled",
             ),
         }
 
-    # Prevent obvious internal or sensitive questions
-    # from being sent to an external search provider.
+    # Protect internal or sensitive questions.
     internal_words = (
         r"\b(our|company|internal|corporate|"
         r"confidential|private|employee|tenant|"
@@ -323,6 +320,8 @@ def search_web(state: AgentState):
         state["question"],
         flags=re.IGNORECASE,
     ):
+        logger.info("Web search blocked by security filter")
+
         return {
             **empty_result,
             "trace": add_trace(
@@ -331,7 +330,10 @@ def search_web(state: AgentState):
             ),
         }
 
+    # Verify Tavily credentials.
     if not settings.tavily_api_key:
+        logger.error("TAVILY_API_KEY is missing")
+
         return {
             **empty_result,
             "trace": add_trace(
@@ -342,22 +344,38 @@ def search_web(state: AgentState):
 
     try:
 
+        logger.info(
+            "Tavily key present: %s",
+            bool(settings.tavily_api_key),
+        )
+
+        logger.info(
+            "Sending query to Tavily: %s",
+            state["current_query"][:150],
+        )
+
         result = web_search_tool().invoke({
             "query": state["current_query"],
         })
 
-    except Exception:
+        logger.info("Tavily request completed successfully")
 
-        logger.exception("Tavily search failed")
+    except Exception as exc:
+
+        logger.exception(
+            "Tavily search failed: %s",
+            str(exc),
+        )
 
         return {
             **empty_result,
             "trace": add_trace(
                 state,
-                "Web fallback failed → review Tavily connectivity/credits",
+                f"Web fallback failed → {type(exc).__name__}",
             ),
         }
 
+    # Parse Tavily response.
     lines = []
     citations = []
 
@@ -392,13 +410,15 @@ def search_web(state: AgentState):
 
     web_results = "\n\n".join(lines)
 
-    # Bound external evidence included in the LLM prompt.
     web_results = web_results[:MAX_WEB_RESULTS_CHARS]
 
     logger.info(
         "Tavily returned %d citations",
         len(citations),
     )
+
+    if not web_results.strip():
+        logger.warning("Tavily returned no usable search results")
 
     return {
         "web_results": web_results,
@@ -532,9 +552,7 @@ Return only the rewritten query.
 
 def generate_from_kb(state: AgentState):
 
-    context = build_kb_context(
-        state["kb_docs"]
-    )
+    context = build_kb_context(state["kb_docs"])
 
     response = llm().invoke(f"""
 You are an enterprise IT support copilot.
@@ -563,10 +581,7 @@ Private KB:
 
     for doc in state["kb_docs"]:
 
-        source = doc.metadata.get(
-            "source",
-            "Private KB",
-        )
+        source = doc.metadata.get("source", "Private KB")
 
         if source not in seen:
 
@@ -679,7 +694,6 @@ def build_graph():
 
     graph = StateGraph(AgentState)
 
-    # Add nodes
     graph.add_node("route_question", route_question)
     graph.add_node("retrieve_kb", retrieve_kb)
     graph.add_node("grade_kb", grade_kb)
@@ -691,10 +705,8 @@ def build_graph():
     graph.add_node("direct_answer", direct_answer)
     graph.add_node("insufficient", insufficient)
 
-    # Entry point
     graph.add_edge(START, "route_question")
 
-    # Question routing
     graph.add_conditional_edges(
         "route_question",
         route_after_router,
@@ -704,7 +716,6 @@ def build_graph():
         },
     )
 
-    # Private KB retrieval
     graph.add_edge("retrieve_kb", "grade_kb")
 
     graph.add_conditional_edges(
@@ -716,7 +727,6 @@ def build_graph():
         },
     )
 
-    # Web fallback
     graph.add_edge("search_web", "grade_web")
 
     graph.add_conditional_edges(
@@ -729,13 +739,8 @@ def build_graph():
         },
     )
 
-    # Retry with rewritten query
-    graph.add_edge(
-        "rewrite_query",
-        "retrieve_kb",
-    )
+    graph.add_edge("rewrite_query", "retrieve_kb")
 
-    # End nodes
     graph.add_edge("generate_from_kb", END)
     graph.add_edge("generate_from_web", END)
     graph.add_edge("direct_answer", END)
@@ -776,13 +781,9 @@ def ask(question: str):
         "citations": [],
     }
 
-    logger.info(
-        "Starting Agentic RAG workflow"
-    )
+    logger.info("Starting Agentic RAG workflow")
 
-    result = agent_graph.invoke(
-        initial_state
-    )
+    result = agent_graph.invoke(initial_state)
 
     logger.info(
         "Agentic RAG workflow completed. Source: %s",
