@@ -11,7 +11,7 @@ langchain-pinecone
 langchain-text-splitters
 langchain-groq
 pinecone
+fastembed
 pypdf
 python-docx
 python-dotenv
- 
