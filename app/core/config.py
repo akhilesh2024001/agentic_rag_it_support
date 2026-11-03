@@ -5,8 +5,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 BASE_DIR = Path(__file__).resolve().parents[2]
+
+
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
+    # Free local embeddings using FastEmbed
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_cache_dir: str = "/tmp/fastembed-cache"
+
     # Tavily web search
     tavily_api_key: str = ""
     web_fallback_enabled: bool = False
@@ -28,10 +33,6 @@ class Settings(BaseSettings):
     pinecone_namespace: str = "company-it-kb"
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
-
-    # Embedding model configuration
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_cache_dir: str = "/tmp/fastembed-cache"
 
     # RAG pipeline configuration
     top_k: int = Field(default=4, ge=1, le=20)
@@ -45,7 +46,6 @@ class Settings(BaseSettings):
     upload_dir: str = str(BASE_DIR / "uploads")
     sample_kb_dir: str = str(BASE_DIR / "data" / "sample_kb")
 
-    # Load variables from .env
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
         extra="ignore"
